@@ -1,73 +1,88 @@
 """
-Pine Labs MCP Client
-====================
-Connects to the hosted Pine Labs SSE MCP server.
-Fetches settlements for one merchant and returns them
-in the same shape our agent.py expects.
+Pine Labs Plural API Client
+============================
+Direct REST calls to Plural UAT API.
+MCP server returns docs, not execution — so we call the API directly.
 
-Credentials go in .env:
-  PINELABS_CLIENT_ID=...
-  PINELABS_CLIENT_SECRET=...
-  PINELABS_BUSINESS_NAME=...
+Credentials in .env:
+  PINELABS_CLIENT_ID
+  PINELABS_CLIENT_SECRET
+  PINELABS_BUSINESS_NAME
 """
 
-import os, json, asyncio
+import os, json, uuid, httpx
+from datetime import datetime
 from dotenv import load_dotenv
-from mcp.client.sse import sse_client
-from mcp.client.session import ClientSession
 
 load_dotenv()
 
-MCP_URL       = "https://mcp.pinelabs.com/sse"
+BASE          = "https://pluraluat.v2.pinepg.in/api"
 CLIENT_ID     = os.getenv("PINELABS_CLIENT_ID", "")
 CLIENT_SECRET = os.getenv("PINELABS_CLIENT_SECRET", "")
 BUSINESS_NAME = os.getenv("PINELABS_BUSINESS_NAME", "")
 
-DEMO_MODE = not (CLIENT_ID and CLIENT_SECRET and BUSINESS_NAME)
+DEMO_MODE = not (CLIENT_ID and CLIENT_SECRET)
 
 
-async def _fetch_settlements_async(from_date: str, to_date: str) -> dict:
-    headers = {"x-business-name": BUSINESS_NAME}
-
-    async with sse_client(MCP_URL, headers=headers) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-
-            # Step 1: get auth token
-            token_resp = await session.call_tool("generate_token", {
-                "client_id":     CLIENT_ID,
-                "client_secret": CLIENT_SECRET,
-            })
-            token_data = json.loads(token_resp.content[0].text)
-            token = token_data.get("access_token") or token_data.get("token")
-
-            # Step 2: fetch settlements
-            settlements_resp = await session.call_tool("get_all_settlements", {
-                "access_token": token,
-                "from_date":    from_date,
-                "to_date":      to_date,
-            })
-            return json.loads(settlements_resp.content[0].text)
+def _get_token() -> str:
+    r = httpx.post(
+        f"{BASE}/auth/v1/token",
+        json={
+            "client_id":     CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+            "grant_type":    "client_credentials",
+        },
+        headers={
+            "Content-Type":      "application/json",
+            "Request-ID":        str(uuid.uuid4()),
+            "Request-Timestamp": datetime.utcnow().isoformat() + "Z",
+        },
+        timeout=10,
+    )
+    print(f"[pinelabs] token status: {r.status_code}")
+    r.raise_for_status()
+    return r.json()["access_token"]
 
 
 def get_settlements(from_date: str, to_date: str) -> list:
-    """
-    Returns list of { date, amount } dicts from Pine Labs.
-    Falls back to empty list in demo mode (seed.py data used instead).
-    """
     if DEMO_MODE:
-        print("[pinelabs_mcp] DEMO MODE — no credentials, using seed data")
+        print("[pinelabs] DEMO MODE — using seed data")
         return []
 
-    raw = asyncio.run(_fetch_settlements_async(from_date, to_date))
+    try:
+        token = _get_token()
+        print(f"[pinelabs] token ok, fetching settlements {from_date} → {to_date}")
 
-    # Normalize Pine Labs response → our shape
-    items = raw if isinstance(raw, list) else raw.get("data", raw.get("settlements", []))
-    return [
-        {
-            "date":   item.get("settlement_date") or item.get("date", ""),
-            "amount": float(item.get("settlement_amount") or item.get("amount", 0)),
-        }
-        for item in items
-        if item.get("settlement_amount") or item.get("amount")
-    ]
+        r = httpx.get(
+            f"{BASE}/settlements/v1/list",
+            params={
+                "start_date": from_date + "T00:00:00",
+                "end_date":   to_date   + "T23:59:59",
+                "page":       1,
+            },
+            headers={
+                "Authorization":     f"Bearer {token}",
+                "Request-ID":        str(uuid.uuid4()),
+                "Request-Timestamp": datetime.utcnow().isoformat() + "Z",
+            },
+            timeout=10,
+        )
+        print(f"[pinelabs] settlements status: {r.status_code} | body: {r.text[:300]}")
+
+        if r.status_code != 200:
+            print("[pinelabs] non-200, falling back to seed data")
+            return []
+
+        data  = r.json()
+        items = data if isinstance(data, list) else data.get("data", data.get("settlements", []))
+        return [
+            {
+                "date":   item.get("settlement_date") or item.get("date", ""),
+                "amount": float(item.get("settlement_amount") or item.get("amount", 0)),
+            }
+            for item in items
+        ]
+
+    except Exception as e:
+        print(f"[pinelabs] error: {e} — falling back to seed data")
+        return []
