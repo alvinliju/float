@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Settlement Brain</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: monospace; background: #f5f5f5; color: #111; display:flex; height:100vh; }
+
+  #sidebar { width:280px; border-right:1px solid #ddd; background:#fff; overflow-y:auto; }
+  #sidebar h2 { padding:16px; font-size:13px; border-bottom:1px solid #eee; color:#666; letter-spacing:.08em; }
+
+  .merchant-item { padding:12px 16px; border-bottom:1px solid #f0f0f0; cursor:pointer; }
+  .merchant-item:hover { background:#fafafa; }
+  .merchant-item.active { background:#f0f7ff; border-left:3px solid #0066cc; }
+  .merchant-name { font-size:13px; font-weight:600; }
+  .merchant-meta { font-size:11px; color:#888; margin-top:2px; }
+
+  #main { flex:1; overflow-y:auto; padding:24px; }
+  #main h2 { font-size:13px; color:#666; margin-bottom:16px; letter-spacing:.08em; }
+
+  #placeholder { color:#aaa; font-size:13px; padding:40px 0; }
+
+  .card { background:#fff; border:1px solid #e0e0e0; border-radius:4px; padding:20px; margin-bottom:16px; }
+  .card-title { font-size:11px; color:#888; letter-spacing:.08em; margin-bottom:8px; }
+
+  .score-row { display:flex; gap:24px; margin-bottom:4px; }
+  .score-box { text-align:center; }
+  .score-big { font-size:28px; font-weight:700; }
+  .score-label { font-size:10px; color:#888; }
+
+  .badge { display:inline-block; padding:2px 8px; border-radius:2px; font-size:11px; font-weight:600; }
+  .badge-green  { background:#e6f4ea; color:#1a7f37; }
+  .badge-yellow { background:#fff8e1; color:#b45309; }
+  .badge-red    { background:#fde8e8; color:#c0392b; }
+
+  .diagnosis { font-size:13px; line-height:1.6; color:#333; }
+
+  .gap-amount { font-size:22px; font-weight:700; color:#c0392b; }
+  .offer-amount { font-size:22px; font-weight:700; color:#0066cc; }
+
+  #run-btn { display:block; width:100%; padding:10px; background:#111; color:#fff;
+             border:none; font-family:monospace; font-size:13px; cursor:pointer; margin-bottom:16px; }
+  #run-btn:hover { background:#333; }
+  #run-btn:disabled { background:#aaa; cursor:not-allowed; }
+
+  .loading { color:#888; font-size:12px; padding:8px 0; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h2>SETTLEMENT BRAIN</h2>
+  <div id="merchant-list"><div style="padding:16px;color:#aaa;font-size:12px">Loading...</div></div>
+</div>
+
+<div id="main">
+  <div id="placeholder">← Select a merchant to run CFO analysis</div>
+  <div id="content" style="display:none">
+    <h2 id="merchant-title"></h2>
+    <button id="run-btn" onclick="runAnalysis()">▶ RUN CFO AGENT</button>
+    <div id="loading" class="loading" style="display:none">Agent thinking...</div>
+    <div id="result"></div>
+  </div>
+</div>
+
+<script>
+const API = 'http://localhost:8001';
+let selectedId = null;
+
+async function loadMerchants() {
+  const r = await fetch(`${API}/merchants`);
+  const merchants = await r.json();
+  const list = document.getElementById('merchant-list');
+  list.innerHTML = merchants.map(m => `
+    <div class="merchant-item" id="m-${m.id}" onclick="selectMerchant(${m.id}, '${m.name}', '${m.location}', '${m.category}')">
+      <div class="merchant-name">${m.name}</div>
+      <div class="merchant-meta">${m.location} · ${m.category} · ₹${(m.monthly_gmv/100000).toFixed(1)}L/mo</div>
+    </div>`).join('');
+}
+
+function selectMerchant(id, name, location, category) {
+  selectedId = id;
+  document.querySelectorAll('.merchant-item').forEach(el => el.classList.remove('active'));
+  document.getElementById(`m-${id}`).classList.add('active');
+  document.getElementById('placeholder').style.display = 'none';
+  document.getElementById('content').style.display = 'block';
+  document.getElementById('merchant-title'>`${name} · ${location} · ${category}`);
+  document.getElementById('merchant-title').textContent = `${name} · ${location} · ${category}`;
+  document.getElementById('result').innerHTML = '';
+}
+
+async function runAnalysis() {
+  if (!selectedId) return;
+  const btn = document.getElementById('run-btn');
+  const loading = document.getElementById('loading');
+  btn.disabled = true;
+  btn.textContent = 'Running...';
+  loading.style.display = 'block';
+  document.getElementById('result').innerHTML = '';
+
+  try {
+    const r = await fetch(`${API}/merchants/${selectedId}/analyze`);
+    const data = await r.json();
+    renderResult(data);
+  } catch(e) {
+    document.getElementById('result').innerHTML = `<div style="color:red">Error: ${e.message}</div>`;
+  }
+
+  btn.disabled = false;
+  btn.textContent = '▶ RUN CFO AGENT';
+  loading.style.display = 'none';
+}
+
+function renderResult(data) {
+  const a = data.analysis;
+  const score = a.health_score;
+  const badgeClass = score >= 70 ? 'badge-green' : score >= 45 ? 'badge-yellow' : 'badge-red';
+  const badgeText  = score >= 70 ? 'HEALTHY' : score >= 45 ? 'WATCH' : 'AT RISK';
+
+  document.getElementById('result').innerHTML = `
+    <div class="card">
+      <div class="card-title">CFO DIAGNOSIS</div>
+      <div class="score-row">
+        <div class="score-box">
+          <div class="score-big">${score}</div>
+          <div class="score-label">HEALTH SCORE</div>
+        </div>
+        <div class="score-box" style="display:flex;align-items:center">
+          <span class="badge ${badgeClass}">${badgeText}</span>
+        </div>
+        <div class="score-box" style="display:flex;align-items:center">
+          <span class="badge ${a.trend === 'growing' ? 'badge-green' : a.trend === 'declining' ? 'badge-red' : 'badge-yellow'}">${a.trend.toUpperCase()}</span>
+        </div>
+      </div>
+      <div class="diagnosis" style="margin-top:12px">${a.diagnosis}</div>
+    </div>
+
+    ${a.gap_detected ? `
+    <div class="card">
+      <div class="card-title">CASH GAP DETECTED</div>
+      <div class="gap-amount">₹${(a.gap_amount/100000).toFixed(2)}L shortfall</div>
+      <div style="font-size:12px;color:#888;margin-top:4px">${a.days_until_crisis} days until crisis</div>
+    </div>` : `
+    <div class="card">
+      <div class="card-title">CASH POSITION</div>
+      <div style="color:#1a7f37;font-weight:600">No gap detected. Merchant is cash-flow positive.</div>
+    </div>`}
+
+    ${a.recommend_offer ? `
+    <div class="card">
+      <div class="card-title">CFO RECOMMENDATION</div>
+      <div class="offer-amount">₹${(a.suggested_amount/100000).toFixed(2)}L</div>
+      <div style="font-size:12px;color:#888;margin-top:4px">Confidence: ${a.confidence.toUpperCase()}</div>
+      <div style="font-size:12px;color:#555;margin-top:8px">18% annual · 8% daily settlement deduction · 45 day tenor</div>
+      <div style="margin-top:12px;padding:10px;background:#f9f9f9;border:1px solid #eee;font-size:11px;color:#666">
+        ⚠ No money moves. This is a recommendation only. Credit officer reviews before any disbursal.
+      </div>
+    </div>` : ''}
+  `;
+}
+
+loadMerchants();
+</script>
+</body>
+</html>
